@@ -2,9 +2,9 @@ fastapi
 uvicorn
 python-multipart
 pillow
-torch
-torchvision
 numpy
 joblib
-scikit-learn
+scikit-learn==1.6.1
 groq
+torch
+torchvision
