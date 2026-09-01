@@ -1,0 +1,4 @@
+models/*.pth
+models/*.pkl
+.env
+__pycache__/
