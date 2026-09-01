@@ -1,8 +1,12 @@
 import os
 import io
+import gc
 import urllib.request
 
-# Limit CPU/thread memory usage
+# ============================================================
+# MEMORY / CPU OPTIMIZATION
+# ============================================================
+
 os.environ["OMP_NUM_THREADS"] = "1"
 os.environ["MKL_NUM_THREADS"] = "1"
 os.environ["OPENBLAS_NUM_THREADS"] = "1"
@@ -51,7 +55,6 @@ app.add_middleware(
 
 device = torch.device("cpu")
 
-# Prevent PyTorch from creating many CPU threads
 torch.set_num_threads(1)
 torch.set_num_interop_threads(1)
 
@@ -98,9 +101,11 @@ def download_model(filename):
     )
 
     if os.path.exists(local_path):
+
         print(
             f"{filename} already exists."
         )
+
         return local_path
 
     url = MODEL_URLS[filename]
@@ -135,7 +140,7 @@ def download_model(filename):
 
 
 # ============================================================
-# DOWNLOAD MODELS
+# DOWNLOAD MODEL FILES
 # ============================================================
 
 efficientnet_path = download_model(
@@ -224,95 +229,143 @@ transform = transforms.Compose([
 
 
 # ============================================================
-# LOAD EFFICIENTNET
+# LOAD EFFICIENTNET ONLY WHEN NEEDED
 # ============================================================
 
-print(
-    "Loading EfficientNetV2..."
-)
+def load_efficientnet():
 
-eff_model = models.efficientnet_v2_s(
-    weights=None
-)
+    print(
+        "Loading EfficientNetV2..."
+    )
 
-eff_features = (
-    eff_model
-    .classifier[1]
-    .in_features
-)
+    model = models.efficientnet_v2_s(
+        weights=None
+    )
 
-eff_model.classifier[1] = nn.Linear(
-    eff_features,
-    7
-)
+    features = (
+        model
+        .classifier[1]
+        .in_features
+    )
 
-# Load weights
-eff_state = torch.load(
-    efficientnet_path,
-    map_location="cpu"
-)
+    model.classifier[1] = nn.Linear(
+        features,
+        7
+    )
 
-eff_model.load_state_dict(
-    eff_state
-)
+    # mmap=True helps reduce peak memory while
+    # loading a large PyTorch checkpoint.
+    try:
 
-# Free temporary state dictionary
-del eff_state
+        state = torch.load(
+            efficientnet_path,
+            map_location="cpu",
+            weights_only=True,
+            mmap=True
+        )
 
-eff_model.to(device)
-eff_model.eval()
+    except TypeError:
 
-print(
-    "EfficientNetV2 loaded."
-)
+        state = torch.load(
+            efficientnet_path,
+            map_location="cpu"
+        )
 
+    # assign=True avoids an unnecessary
+    # parameter copy when supported.
+    try:
 
-# ============================================================
-# LOAD CONVNEXT
-# ============================================================
+        model.load_state_dict(
+            state,
+            assign=True
+        )
 
-print(
-    "Loading ConvNeXt..."
-)
+    except TypeError:
 
-conv_model = models.convnext_base(
-    weights=None
-)
+        model.load_state_dict(
+            state
+        )
 
-conv_features = (
-    conv_model
-    .classifier[2]
-    .in_features
-)
+    del state
 
-conv_model.classifier[2] = nn.Linear(
-    conv_features,
-    7
-)
+    model.to(device)
+    model.eval()
 
-# Load weights
-conv_state = torch.load(
-    convnext_path,
-    map_location="cpu"
-)
+    print(
+        "EfficientNetV2 loaded."
+    )
 
-conv_model.load_state_dict(
-    conv_state
-)
-
-# Free temporary state dictionary
-del conv_state
-
-conv_model.to(device)
-conv_model.eval()
-
-print(
-    "ConvNeXt loaded."
-)
+    return model
 
 
 # ============================================================
-# LOAD ENSEMBLE
+# LOAD CONVNEXT ONLY WHEN NEEDED
+# ============================================================
+
+def load_convnext():
+
+    print(
+        "Loading ConvNeXt..."
+    )
+
+    model = models.convnext_base(
+        weights=None
+    )
+
+    features = (
+        model
+        .classifier[2]
+        .in_features
+    )
+
+    model.classifier[2] = nn.Linear(
+        features,
+        7
+    )
+
+    try:
+
+        state = torch.load(
+            convnext_path,
+            map_location="cpu",
+            weights_only=True,
+            mmap=True
+        )
+
+    except TypeError:
+
+        state = torch.load(
+            convnext_path,
+            map_location="cpu"
+        )
+
+    try:
+
+        model.load_state_dict(
+            state,
+            assign=True
+        )
+
+    except TypeError:
+
+        model.load_state_dict(
+            state
+        )
+
+    del state
+
+    model.to(device)
+    model.eval()
+
+    print(
+        "ConvNeXt loaded."
+    )
+
+    return model
+
+
+# ============================================================
+# LOAD ENSEMBLE MODEL
 # ============================================================
 
 print(
@@ -470,6 +523,7 @@ Rules:
         )
 
         if not result:
+
             return (
                 "Cause: Information unavailable.\n"
                 "Prevention: Information unavailable.\n"
@@ -510,6 +564,7 @@ def root():
     return {
         "message":
             "Groundnut Leaf Disease Recognition API",
+
         "status":
             "running"
     }
@@ -542,9 +597,9 @@ async def predict(
 
     try:
 
-        # ----------------------------------------------------
-        # Read image
-        # ----------------------------------------------------
+        # ====================================================
+        # READ IMAGE
+        # ====================================================
 
         image_bytes = await file.read()
 
@@ -554,12 +609,11 @@ async def predict(
             )
         ).convert("RGB")
 
-        # Release original bytes
         del image_bytes
 
-        # ----------------------------------------------------
-        # Transform
-        # ----------------------------------------------------
+        # ====================================================
+        # TRANSFORM IMAGE
+        # ====================================================
 
         image_tensor = transform(
             image
@@ -569,9 +623,11 @@ async def predict(
             device
         )
 
-        # ----------------------------------------------------
-        # EfficientNet
-        # ----------------------------------------------------
+        # ====================================================
+        # EFFICIENTNET
+        # ====================================================
+
+        eff_model = load_efficientnet()
 
         with torch.inference_mode():
 
@@ -584,15 +640,30 @@ async def predict(
                 dim=1
             )
 
+            # Convert immediately to small
+            # NumPy array.
             eff_output = (
                 eff_output
                 .cpu()
                 .numpy()
+                .astype(
+                    np.float32
+                )
             )
 
-        # ----------------------------------------------------
-        # ConvNeXt
-        # ----------------------------------------------------
+        # ====================================================
+        # UNLOAD EFFICIENTNET
+        # ====================================================
+
+        del eff_model
+
+        gc.collect()
+
+        # ====================================================
+        # CONVNEXT
+        # ====================================================
+
+        conv_model = load_convnext()
 
         with torch.inference_mode():
 
@@ -609,14 +680,30 @@ async def predict(
                 conv_output
                 .cpu()
                 .numpy()
+                .astype(
+                    np.float32
+                )
             )
 
-        # Release tensor
+        # ====================================================
+        # UNLOAD CONVNEXT
+        # ====================================================
+
+        del conv_model
+
+        gc.collect()
+
+        # ====================================================
+        # RELEASE IMAGE TENSOR
+        # ====================================================
+
         del image_tensor
 
-        # ----------------------------------------------------
-        # Meta features
-        # ----------------------------------------------------
+        gc.collect()
+
+        # ====================================================
+        # COMBINE MODEL OUTPUTS
+        # ====================================================
 
         X_meta = np.concatenate(
             [
@@ -626,9 +713,9 @@ async def predict(
             axis=1
         )
 
-        # ----------------------------------------------------
-        # Ensemble prediction
-        # ----------------------------------------------------
+        # ====================================================
+        # ENSEMBLE PREDICTION
+        # ====================================================
 
         pred = meta_model.predict(
             X_meta
@@ -640,17 +727,17 @@ async def predict(
             pred
         ]
 
-        # ----------------------------------------------------
-        # Confidence
-        # ----------------------------------------------------
+        # ====================================================
+        # CONFIDENCE
+        # ====================================================
 
         confidence = float(
             np.max(X_meta)
         )
 
-        # ----------------------------------------------------
-        # AI suggestions
-        # ----------------------------------------------------
+        # ====================================================
+        # GROQ SUGGESTIONS
+        # ====================================================
 
         suggestions = (
             get_groq_suggestions(
@@ -659,10 +746,19 @@ async def predict(
             )
         )
 
-        # Release temporary arrays
+        # ====================================================
+        # RELEASE ARRAYS
+        # ====================================================
+
         del eff_output
         del conv_output
         del X_meta
+
+        gc.collect()
+
+        # ====================================================
+        # RESPONSE
+        # ====================================================
 
         return {
 
