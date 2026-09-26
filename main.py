@@ -60,109 +60,72 @@ torch.set_num_interop_threads(1)
 
 
 # ============================================================
-# MODEL DIRECTORY
+# MODEL FILES
 # ============================================================
 
 MODEL_DIR = "models"
-
 os.makedirs(MODEL_DIR, exist_ok=True)
 
-
-# ============================================================
-# HUGGING FACE
-# ============================================================
-
+# Hugging Face repository
 HF_BASE_URL = (
     "https://huggingface.co/varshu13/"
     "groundnut-leaf-disease-models/resolve/main/"
 )
 
-MODEL_URLS = {
-    "efficientnet_model.pth":
-        HF_BASE_URL + "efficientnet_model.pth",
-
-    "convnext_model.pth":
-        HF_BASE_URL + "convnext_model.pth",
-
-    "ensemble_model.pkl":
-        HF_BASE_URL + "ensemble_model.pkl",
-}
-
-
-# ============================================================
-# DOWNLOAD MODEL
-# ============================================================
-
-def download_model(filename):
-
-    local_path = os.path.join(
-        MODEL_DIR,
-        filename
-    )
-
-    if os.path.exists(local_path):
-
-        print(
-            f"{filename} already exists."
-        )
-
-        return local_path
-
-    url = MODEL_URLS[filename]
-
-    print(
-        f"Downloading {filename}..."
-    )
-
-    try:
-
-        urllib.request.urlretrieve(
-            url,
-            local_path
-        )
-
-        print(
-            f"{filename} downloaded."
-        )
-
-        return local_path
-
-    except Exception as e:
-
-        print(
-            f"Error downloading {filename}: {e}"
-        )
-
-        if os.path.exists(local_path):
-            os.remove(local_path)
-
-        raise
-
-
-# ============================================================
-# DOWNLOAD MODEL FILES
-# ============================================================
-
-efficientnet_path = download_model(
+efficientnet_path = os.path.join(
+    MODEL_DIR,
     "efficientnet_model.pth"
 )
 
-convnext_path = download_model(
-    "convnext_model.pth"
+convnext_path = os.path.join(
+    MODEL_DIR,
+    "convnext_tiny_model.pth"
 )
 
-ensemble_path = download_model(
-    "ensemble_model.pkl"
+ensemble_path = os.path.join(
+    MODEL_DIR,
+    "ensemble_tiny_model.pkl"
 )
 
+
+def download_model_if_missing(file_path, file_name):
+    if os.path.exists(file_path):
+        print(f"{file_name} already exists.")
+        return
+
+    print(f"Downloading {file_name} from Hugging Face...")
+
+    url = HF_BASE_URL + file_name
+
+    urllib.request.urlretrieve(
+        url,
+        file_path
+    )
+
+    print(f"{file_name} downloaded successfully.")
+
+
+# Download models only when they are missing
+download_model_if_missing(
+    efficientnet_path,
+    "efficientnet_model.pth"
+)
+
+download_model_if_missing(
+    convnext_path,
+    "convnext_tiny_model.pth"
+)
+
+download_model_if_missing(
+    ensemble_path,
+    "ensemble_tiny_model.pkl"
+)
 
 # ============================================================
 # GROQ
 # ============================================================
 
-GROQ_API_KEY = os.getenv(
-    "GROQ_API_KEY"
-)
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
 groq_client = None
 
@@ -308,7 +271,7 @@ def load_convnext():
         "Loading ConvNeXt..."
     )
 
-    model = models.convnext_base(
+    model = models.convnext_tiny(
         weights=None
     )
 
@@ -800,18 +763,10 @@ async def predict(
 # ============================================================
 
 if __name__ == "__main__":
-
     import uvicorn
-
-    port = int(
-        os.environ.get(
-            "PORT",
-            8000
-        )
-    )
 
     uvicorn.run(
         app,
         host="0.0.0.0",
-        port=port
+        port=8000
     )
