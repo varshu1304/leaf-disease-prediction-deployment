@@ -22,7 +22,7 @@ import torch
 import torch.nn as nn
 import torchvision.models as models
 from torchvision import transforms
-
+import timm
 import numpy as np
 import joblib
 
@@ -230,66 +230,39 @@ transform = transforms.Compose([
 # ============================================================
 # LOAD EFFICIENTNET V2 B0
 # ============================================================
-
 def load_efficientnet():
+    print("Loading EfficientNetV2-B0 using timm...")
 
-    print(
-        "Loading EfficientNetV2-B0..."
-    )
-
-    model = models.efficientnet_v2_b0(
-        weights=None
-    )
-
-    features = (
-        model
-        .classifier[1]
-        .in_features
-    )
-
-    model.classifier[1] = nn.Linear(
-        features,
-        7
+    model = timm.create_model(
+        "tf_efficientnetv2_b0",
+        pretrained=False,
+        num_classes=7
     )
 
     try:
-
         state = torch.load(
             efficientnet_path,
             map_location="cpu",
             weights_only=True,
             mmap=True
         )
-
     except TypeError:
-
         state = torch.load(
             efficientnet_path,
             map_location="cpu"
         )
 
     try:
-
-        model.load_state_dict(
-            state,
-            assign=True
-        )
-
+        model.load_state_dict(state, assign=True)
     except TypeError:
-
-        model.load_state_dict(
-            state
-        )
+        model.load_state_dict(state)
 
     del state
 
     model.to(device)
-
     model.eval()
 
-    print(
-        "EfficientNetV2-B0 loaded."
-    )
+    print("EfficientNetV2-B0 loaded successfully.")
 
     return model
 
