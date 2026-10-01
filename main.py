@@ -1,3 +1,4 @@
+```python
 import os
 import io
 import gc
@@ -230,8 +231,12 @@ transform = transforms.Compose([
 # ============================================================
 # LOAD EFFICIENTNET V2 B0
 # ============================================================
+
 def load_efficientnet():
-    print("Loading EfficientNetV2-B0 using timm...")
+
+    print(
+        "Loading EfficientNetV2-B0 using timm..."
+    )
 
     model = timm.create_model(
         "tf_efficientnetv2_b0",
@@ -240,29 +245,43 @@ def load_efficientnet():
     )
 
     try:
+
         state = torch.load(
             efficientnet_path,
             map_location="cpu",
             weights_only=True,
             mmap=True
         )
+
     except TypeError:
+
         state = torch.load(
             efficientnet_path,
             map_location="cpu"
         )
 
     try:
-        model.load_state_dict(state, assign=True)
+
+        model.load_state_dict(
+            state,
+            assign=True
+        )
+
     except TypeError:
-        model.load_state_dict(state)
+
+        model.load_state_dict(
+            state
+        )
 
     del state
 
     model.to(device)
+
     model.eval()
 
-    print("EfficientNetV2-B0 loaded successfully.")
+    print(
+        "EfficientNetV2-B0 loaded successfully."
+    )
 
     return model
 
@@ -335,20 +354,15 @@ def load_convnext():
 
 
 # ============================================================
-# LOAD ENSEMBLE
+# ENSEMBLE
 # ============================================================
 
-print(
-    "Loading B0 + ConvNeXt Tiny ensemble..."
-)
+# IMPORTANT:
+# Do NOT load the Logistic Regression model here.
+# It is loaded only during prediction to reduce
+# Render startup memory usage.
 
-meta_model = joblib.load(
-    ensemble_path
-)
-
-print(
-    "B0 + ConvNeXt Tiny ensemble loaded."
-)
+meta_model = None
 
 
 # ============================================================
@@ -674,6 +688,8 @@ async def predict(
 
         del image_tensor
 
+        del image
+
         gc.collect()
 
 
@@ -687,6 +703,23 @@ async def predict(
                 conv_output
             ],
             axis=1
+        )
+
+
+        # ====================================================
+        # LOAD ENSEMBLE ONLY WHEN NEEDED
+        # ====================================================
+
+        print(
+            "Loading B0 + ConvNeXt Tiny ensemble..."
+        )
+
+        meta_model = joblib.load(
+            ensemble_path
+        )
+
+        print(
+            "B0 + ConvNeXt Tiny ensemble loaded."
         )
 
 
@@ -739,6 +772,15 @@ async def predict(
 
 
         # ====================================================
+        # UNLOAD ENSEMBLE
+        # ====================================================
+
+        del meta_model
+
+        gc.collect()
+
+
+        # ====================================================
         # GROQ SUGGESTIONS
         # ====================================================
 
@@ -788,6 +830,9 @@ async def predict(
             str(e)
         )
 
+        # TEMPORARY DEBUG FIELD
+        # Remove "error" after everything works.
+
         return {
 
             "disease":
@@ -797,7 +842,10 @@ async def predict(
                 0,
 
             "suggestions":
-                "Unable to process image."
+                "Unable to process image.",
+
+            "error":
+                str(e)
         }
 
 
@@ -814,3 +862,4 @@ if __name__ == "__main__":
         host="0.0.0.0",
         port=8000
     )
+```
