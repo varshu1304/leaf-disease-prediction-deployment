@@ -64,17 +64,30 @@ torch.set_num_interop_threads(1)
 # ============================================================
 
 MODEL_DIR = "models"
-os.makedirs(MODEL_DIR, exist_ok=True)
 
-# Hugging Face repository
+os.makedirs(
+    MODEL_DIR,
+    exist_ok=True
+)
+
+
+# ============================================================
+# HUGGING FACE
+# ============================================================
+
 HF_BASE_URL = (
     "https://huggingface.co/varshu13/"
     "groundnut-leaf-disease-models/resolve/main/"
 )
 
+
+# ============================================================
+# CURRENT MODEL FILENAMES
+# ============================================================
+
 efficientnet_path = os.path.join(
     MODEL_DIR,
-    "efficientnet_model.pth"
+    "efficientnet_v2_b0_model.pth"
 )
 
 convnext_path = os.path.join(
@@ -84,16 +97,31 @@ convnext_path = os.path.join(
 
 ensemble_path = os.path.join(
     MODEL_DIR,
-    "ensemble_tiny_model.pkl"
+    "ensemble_b0_tiny_model.pkl"
 )
 
 
-def download_model_if_missing(file_path, file_name):
+# ============================================================
+# DOWNLOAD MODEL IF MISSING
+# ============================================================
+
+def download_model_if_missing(
+    file_path,
+    file_name
+):
+
     if os.path.exists(file_path):
-        print(f"{file_name} already exists.")
+
+        print(
+            f"{file_name} already exists."
+        )
+
         return
 
-    print(f"Downloading {file_name} from Hugging Face...")
+    print(
+        f"Downloading {file_name} "
+        "from Hugging Face..."
+    )
 
     url = HF_BASE_URL + file_name
 
@@ -102,13 +130,18 @@ def download_model_if_missing(file_path, file_name):
         file_path
     )
 
-    print(f"{file_name} downloaded successfully.")
+    print(
+        f"{file_name} downloaded successfully."
+    )
 
 
-# Download models only when they are missing
+# ============================================================
+# DOWNLOAD CURRENT MODELS
+# ============================================================
+
 download_model_if_missing(
     efficientnet_path,
-    "efficientnet_model.pth"
+    "efficientnet_v2_b0_model.pth"
 )
 
 download_model_if_missing(
@@ -118,14 +151,17 @@ download_model_if_missing(
 
 download_model_if_missing(
     ensemble_path,
-    "ensemble_tiny_model.pkl"
+    "ensemble_b0_tiny_model.pkl"
 )
+
 
 # ============================================================
 # GROQ
 # ============================================================
 
-GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+GROQ_API_KEY = os.getenv(
+    "GROQ_API_KEY"
+)
 
 groq_client = None
 
@@ -192,16 +228,16 @@ transform = transforms.Compose([
 
 
 # ============================================================
-# LOAD EFFICIENTNET ONLY WHEN NEEDED
+# LOAD EFFICIENTNET V2 B0
 # ============================================================
 
 def load_efficientnet():
 
     print(
-        "Loading EfficientNetV2..."
+        "Loading EfficientNetV2-B0..."
     )
 
-    model = models.efficientnet_v2_s(
+    model = models.efficientnet_v2_b0(
         weights=None
     )
 
@@ -216,8 +252,6 @@ def load_efficientnet():
         7
     )
 
-    # mmap=True helps reduce peak memory while
-    # loading a large PyTorch checkpoint.
     try:
 
         state = torch.load(
@@ -234,8 +268,6 @@ def load_efficientnet():
             map_location="cpu"
         )
 
-    # assign=True avoids an unnecessary
-    # parameter copy when supported.
     try:
 
         model.load_state_dict(
@@ -252,23 +284,24 @@ def load_efficientnet():
     del state
 
     model.to(device)
+
     model.eval()
 
     print(
-        "EfficientNetV2 loaded."
+        "EfficientNetV2-B0 loaded."
     )
 
     return model
 
 
 # ============================================================
-# LOAD CONVNEXT ONLY WHEN NEEDED
+# LOAD CONVNEXT TINY
 # ============================================================
 
 def load_convnext():
 
     print(
-        "Loading ConvNeXt..."
+        "Loading ConvNeXt Tiny..."
     )
 
     model = models.convnext_tiny(
@@ -318,21 +351,22 @@ def load_convnext():
     del state
 
     model.to(device)
+
     model.eval()
 
     print(
-        "ConvNeXt loaded."
+        "ConvNeXt Tiny loaded."
     )
 
     return model
 
 
 # ============================================================
-# LOAD ENSEMBLE MODEL
+# LOAD ENSEMBLE
 # ============================================================
 
 print(
-    "Loading ensemble model..."
+    "Loading B0 + ConvNeXt Tiny ensemble..."
 )
 
 meta_model = joblib.load(
@@ -340,7 +374,7 @@ meta_model = joblib.load(
 )
 
 print(
-    "Ensemble model loaded."
+    "B0 + ConvNeXt Tiny ensemble loaded."
 )
 
 
@@ -354,6 +388,7 @@ def get_groq_suggestions(
 ):
 
     if language not in SUPPORTED_LANGUAGES:
+
         language = "en"
 
     cache_key = (
@@ -574,6 +609,7 @@ async def predict(
 
         del image_bytes
 
+
         # ====================================================
         # TRANSFORM IMAGE
         # ====================================================
@@ -586,8 +622,9 @@ async def predict(
             device
         )
 
+
         # ====================================================
-        # EFFICIENTNET
+        # EFFICIENTNET V2 B0
         # ====================================================
 
         eff_model = load_efficientnet()
@@ -603,8 +640,6 @@ async def predict(
                 dim=1
             )
 
-            # Convert immediately to small
-            # NumPy array.
             eff_output = (
                 eff_output
                 .cpu()
@@ -614,6 +649,7 @@ async def predict(
                 )
             )
 
+
         # ====================================================
         # UNLOAD EFFICIENTNET
         # ====================================================
@@ -622,8 +658,9 @@ async def predict(
 
         gc.collect()
 
+
         # ====================================================
-        # CONVNEXT
+        # CONVNEXT TINY
         # ====================================================
 
         conv_model = load_convnext()
@@ -648,6 +685,7 @@ async def predict(
                 )
             )
 
+
         # ====================================================
         # UNLOAD CONVNEXT
         # ====================================================
@@ -655,6 +693,7 @@ async def predict(
         del conv_model
 
         gc.collect()
+
 
         # ====================================================
         # RELEASE IMAGE TENSOR
@@ -664,8 +703,9 @@ async def predict(
 
         gc.collect()
 
+
         # ====================================================
-        # COMBINE MODEL OUTPUTS
+        # COMBINE CNN OUTPUTS
         # ====================================================
 
         X_meta = np.concatenate(
@@ -675,6 +715,7 @@ async def predict(
             ],
             axis=1
         )
+
 
         # ====================================================
         # ENSEMBLE PREDICTION
@@ -690,13 +731,39 @@ async def predict(
             pred
         ]
 
+
         # ====================================================
-        # CONFIDENCE
+        # ENSEMBLE CONFIDENCE
         # ====================================================
 
-        confidence = float(
-            np.max(X_meta)
-        )
+        try:
+
+            ensemble_probabilities = (
+                meta_model
+                .predict_proba(
+                    X_meta
+                )[0]
+            )
+
+            confidence = float(
+                np.max(
+                    ensemble_probabilities
+                )
+            )
+
+        except Exception:
+
+            # Fallback if the loaded
+            # meta-model does not support
+            # predict_proba.
+
+            confidence = float(
+                max(
+                    np.max(eff_output),
+                    np.max(conv_output)
+                )
+            )
+
 
         # ====================================================
         # GROQ SUGGESTIONS
@@ -709,6 +776,7 @@ async def predict(
             )
         )
 
+
         # ====================================================
         # RELEASE ARRAYS
         # ====================================================
@@ -718,6 +786,7 @@ async def predict(
         del X_meta
 
         gc.collect()
+
 
         # ====================================================
         # RESPONSE
@@ -737,6 +806,7 @@ async def predict(
             "suggestions":
                 suggestions
         }
+
 
     except Exception as e:
 
@@ -763,6 +833,7 @@ async def predict(
 # ============================================================
 
 if __name__ == "__main__":
+
     import uvicorn
 
     uvicorn.run(
