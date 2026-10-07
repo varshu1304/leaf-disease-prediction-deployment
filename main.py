@@ -1,6 +1,5 @@
 # ============================================================
-# main.py
-# Groundnut Leaf Disease Recognition API
+# GROUNDNUT LEAF DISEASE RECOGNITION - FASTAPI BACKEND
 # ============================================================
 
 import os
@@ -10,7 +9,8 @@ import urllib.request
 import threading
 
 # ============================================================
-# MEMORY / CPU OPTIMIZATION
+# LIMIT CPU THREADS
+# Important for Render CPU deployment
 # ============================================================
 
 os.environ["OMP_NUM_THREADS"] = "1"
@@ -18,6 +18,7 @@ os.environ["MKL_NUM_THREADS"] = "1"
 os.environ["OPENBLAS_NUM_THREADS"] = "1"
 os.environ["VECLIB_MAXIMUM_THREADS"] = "1"
 os.environ["NUMEXPR_NUM_THREADS"] = "1"
+
 
 # ============================================================
 # IMPORTS
@@ -38,18 +39,19 @@ from PIL import Image
 import torch
 import torch.nn as nn
 import torchvision.models as models
+
 from torchvision import transforms
 
 from groq import Groq
 
 
 # ============================================================
-# FASTAPI
+# FASTAPI APP
 # ============================================================
 
 app = FastAPI(
     title="Groundnut Leaf Disease Recognition API",
-    version="1.0"
+    version="1.0",
 )
 
 
@@ -77,17 +79,13 @@ torch.set_num_interop_threads(1)
 
 
 # ============================================================
-# GLOBAL MODEL
+# MODEL VARIABLES
 # ============================================================
-
-# The model is loaded ONCE when the server starts.
-# It is NOT loaded/deleted for every prediction.
 
 model = None
 
-# Prevent multiple CPU inference requests from running
-# simultaneously.
-
+# Lock prevents multiple CPU predictions from running
+# at exactly the same time.
 model_lock = threading.Lock()
 
 
@@ -99,12 +97,12 @@ MODEL_DIR = "models"
 
 os.makedirs(
     MODEL_DIR,
-    exist_ok=True
+    exist_ok=True,
 )
 
 
 # ============================================================
-# HUGGING FACE
+# HUGGING FACE MODEL URL
 # ============================================================
 
 HF_BASE_URL = (
@@ -114,19 +112,19 @@ HF_BASE_URL = (
 
 
 # ============================================================
-# EFFICIENTNET V2-S MODEL
+# MODEL FILE
 # ============================================================
 
 efficientnet_filename = "efficientnet_model.pth"
 
 efficientnet_path = os.path.join(
     MODEL_DIR,
-    efficientnet_filename
+    efficientnet_filename,
 )
 
 
 # ============================================================
-# DOWNLOAD MODEL IF MISSING
+# DOWNLOAD MODEL IF NOT PRESENT
 # ============================================================
 
 def download_model_if_missing():
@@ -145,15 +143,15 @@ def download_model_if_missing():
     )
 
     url = (
-        HF_BASE_URL +
-        efficientnet_filename
+        HF_BASE_URL
+        + efficientnet_filename
     )
 
     try:
 
         urllib.request.urlretrieve(
             url,
-            efficientnet_path
+            efficientnet_path,
         )
 
         print(
@@ -165,29 +163,22 @@ def download_model_if_missing():
 
         print(
             "Error downloading model:",
-            str(e)
+            str(e),
         )
 
-        if os.path.exists(
-            efficientnet_path
-        ):
+        if os.path.exists(efficientnet_path):
 
-            os.remove(
-                efficientnet_path
-            )
+            os.remove(efficientnet_path)
 
         raise
 
 
-# ============================================================
-# DOWNLOAD MODEL
-# ============================================================
-
+# Download before loading
 download_model_if_missing()
 
 
 # ============================================================
-# GROQ
+# GROQ CONFIGURATION
 # ============================================================
 
 GROQ_API_KEY = os.getenv(
@@ -203,7 +194,7 @@ if GROQ_API_KEY:
     )
 
     print(
-        "Groq API configured."
+        "Groq API configured successfully."
     )
 
 else:
@@ -224,7 +215,7 @@ classes = [
     "late_spot",
     "rosette",
     "rust",
-    "wormbite"
+    "wormbite",
 ]
 
 
@@ -235,32 +226,43 @@ classes = [
 SUPPORTED_LANGUAGES = [
     "en",
     "kn",
-    "hi"
+    "hi",
 ]
 
 
 # ============================================================
 # GROQ CACHE
+#
+# Important:
+# Disease + language are used as the cache key.
+#
+# Example:
+# ("early_spot", "en")
+# ("early_spot", "kn")
+# ("early_spot", "hi")
+#
+# These are treated as three different responses.
 # ============================================================
 
 disease_cache = {}
 
 
 # ============================================================
-# IMAGE TRANSFORM
+# IMAGE TRANSFORMATION
 # ============================================================
 
-transform = transforms.Compose([
-    transforms.Resize(
-        (224, 224)
-    ),
-
-    transforms.ToTensor()
-])
+transform = transforms.Compose(
+    [
+        transforms.Resize(
+            (224, 224)
+        ),
+        transforms.ToTensor(),
+    ]
+)
 
 
 # ============================================================
-# LOAD EFFICIENTNET V2-S
+# LOAD EFFICIENTNETV2-S
 # ============================================================
 
 def load_efficientnet():
@@ -269,31 +271,26 @@ def load_efficientnet():
         "Loading EfficientNetV2-S..."
     )
 
-    # --------------------------------------------------------
-    # CREATE MODEL ARCHITECTURE
-    # --------------------------------------------------------
-
-    loaded_model = models.efficientnet_v2_s(
+    # Create architecture
+    model_instance = models.efficientnet_v2_s(
         weights=None
     )
 
-    # --------------------------------------------------------
-    # CHANGE CLASSIFIER
-    # --------------------------------------------------------
-
+    # Number of input features
     num_features = (
-        loaded_model
+        model_instance
         .classifier[1]
         .in_features
     )
 
-    loaded_model.classifier[1] = nn.Linear(
+    # Replace classifier
+    model_instance.classifier[1] = nn.Linear(
         num_features,
-        7
+        7,
     )
 
     # --------------------------------------------------------
-    # LOAD TRAINED WEIGHTS
+    # Load trained weights
     # --------------------------------------------------------
 
     try:
@@ -302,38 +299,33 @@ def load_efficientnet():
             efficientnet_path,
             map_location="cpu",
             weights_only=True,
-            mmap=True
+            mmap=True,
         )
 
     except TypeError:
 
-        # Compatibility with older PyTorch
-
+        # Compatibility for older PyTorch
         state = torch.load(
             efficientnet_path,
-            map_location="cpu"
+            map_location="cpu",
         )
 
     # --------------------------------------------------------
-    # LOAD STATE DICT
+    # Load state dictionary
     # --------------------------------------------------------
 
     try:
 
-        loaded_model.load_state_dict(
+        model_instance.load_state_dict(
             state,
-            assign=True
+            assign=True,
         )
 
     except TypeError:
 
-        loaded_model.load_state_dict(
+        model_instance.load_state_dict(
             state
         )
-
-    # --------------------------------------------------------
-    # RELEASE CHECKPOINT MEMORY
-    # --------------------------------------------------------
 
     del state
 
@@ -341,23 +333,33 @@ def load_efficientnet():
     # CPU
     # --------------------------------------------------------
 
-    loaded_model.to(device)
+    model_instance.to(device)
 
-    # --------------------------------------------------------
-    # EVALUATION MODE
-    # --------------------------------------------------------
-
-    loaded_model.eval()
+    # Evaluation mode
+    model_instance.eval()
 
     print(
         "EfficientNetV2-S loaded successfully."
     )
 
-    return loaded_model
+    return model_instance
 
 
 # ============================================================
 # FASTAPI STARTUP
+#
+# IMPORTANT:
+# Model is loaded ONCE.
+#
+# Previously the model was loaded for every /predict request.
+# That could cause:
+#
+# - slow second prediction
+# - memory problems
+# - Render restart
+# - Failed fetch in Flutter
+#
+# Now it stays loaded in memory.
 # ============================================================
 
 @app.on_event("startup")
@@ -366,19 +368,11 @@ def startup_event():
     global model
 
     print(
-        "============================================"
+        "=========================================="
     )
 
     print(
-        "Starting Groundnut Disease API..."
-    )
-
-    print(
-        "============================================"
-    )
-
-    print(
-        "Initializing EfficientNetV2-S model..."
+        "Initializing Groundnut Disease Model..."
     )
 
     model = load_efficientnet()
@@ -388,7 +382,7 @@ def startup_event():
     )
 
     print(
-        "============================================"
+        "=========================================="
     )
 
 
@@ -398,14 +392,18 @@ def startup_event():
 
 def get_groq_suggestions(
     disease,
-    language="en"
+    language="en",
 ):
 
     # --------------------------------------------------------
-    # VALIDATE LANGUAGE
+    # Validate language
     # --------------------------------------------------------
 
     if language not in SUPPORTED_LANGUAGES:
+
+        print(
+            f"Unsupported language received: {language}"
+        )
 
         language = "en"
 
@@ -416,7 +414,7 @@ def get_groq_suggestions(
 
     cache_key = (
         disease,
-        language
+        language,
     )
 
 
@@ -428,7 +426,7 @@ def get_groq_suggestions(
 
         print(
             f"Using cached Groq response: "
-            f"{disease} / {language}"
+            f"{cache_key}"
         )
 
         return disease_cache[
@@ -436,50 +434,64 @@ def get_groq_suggestions(
         ]
 
 
-    # --------------------------------------------------------
+    # ========================================================
     # LANGUAGE INSTRUCTIONS
-    # --------------------------------------------------------
+    # ========================================================
 
     if language == "kn":
 
         language_instruction = """
-Respond completely in Kannada (ಕನ್ನಡ).
+You MUST write the explanation entirely in Kannada.
 
-Use Kannada script for the explanation.
+Use Kannada script (ಕನ್ನಡ ಲಿಪಿ).
 
-Keep these headings EXACTLY:
+DO NOT write the explanation in English.
+
+DO NOT translate only a few words.
+
+Every explanation sentence must be in Kannada.
+
+The four labels MUST remain exactly as:
 
 Cause:
 Prevention:
 Treatment:
 Advice:
 
-Only the text after the headings should be in Kannada.
+Only the content AFTER these labels must be in Kannada.
 """
 
     elif language == "hi":
 
         language_instruction = """
-Respond completely in Hindi using Devanagari script.
+You MUST write the explanation entirely in Hindi.
 
-Use Hindi for the explanation.
+Use Devanagari script (हिन्दी).
 
-Keep these headings EXACTLY:
+DO NOT write the explanation in English.
+
+DO NOT translate only a few words.
+
+Every explanation sentence must be in Hindi.
+
+The four labels MUST remain exactly as:
 
 Cause:
 Prevention:
 Treatment:
 Advice:
 
-Only the text after the headings should be in Hindi.
+Only the content AFTER these labels must be in Hindi.
 """
 
     else:
 
         language_instruction = """
-Respond completely in simple English.
+You MUST write the explanation entirely in simple English.
 
-Keep these headings EXACTLY:
+Use simple English that farmers can understand.
+
+The four labels MUST remain exactly as:
 
 Cause:
 Prevention:
@@ -488,42 +500,87 @@ Advice:
 """
 
 
-    # --------------------------------------------------------
-    # PROMPT
-    # --------------------------------------------------------
+    # ========================================================
+    # GROQ PROMPT
+    # ========================================================
 
     prompt = f"""
-A groundnut crop has been diagnosed with:
+You are an agricultural expert helping
+groundnut farmers.
+
+The detected groundnut leaf disease is:
 
 {disease}
 
+The requested response language is:
+
+{language}
+
 {language_instruction}
 
-Follow this exact format:
+Follow this EXACT format:
 
-Cause: [short explanation]
+Cause: [explanation]
 
-Prevention: [short explanation]
+Prevention: [explanation]
 
-Treatment: [short explanation]
+Treatment: [explanation]
 
-Advice: [short explanation]
+Advice: [explanation]
 
-Rules:
+IMPORTANT RULES:
 
-- Keep the explanation simple.
-- Use language farmers can understand.
-- Do not use markdown.
-- Do not add extra headings.
-- Keep each section short.
+1. The content must be written completely
+   in the selected language.
+
+2. If the selected language is Kannada (kn),
+   use Kannada script.
+
+3. If the selected language is Hindi (hi),
+   use Devanagari script.
+
+4. If the selected language is English (en),
+   use simple English.
+
+5. Do NOT use English sentences when
+   Kannada or Hindi is selected.
+
+6. Keep these four labels exactly:
+
+   Cause:
+   Prevention:
+   Treatment:
+   Advice:
+
+7. Do not add additional headings.
+
+8. Do not use Markdown.
+
+9. Keep the information simple.
+
+10. Make the information useful for
+    groundnut farmers.
+
+11. Keep each section short.
+
+12. Do not mention the language
+    in your response.
+
+13. Do not provide a translation.
+
+14. Directly answer in the requested language.
 """
 
 
-    # --------------------------------------------------------
+    # ========================================================
     # GROQ NOT CONFIGURED
-    # --------------------------------------------------------
+    # ========================================================
 
     if groq_client is None:
+
+        print(
+            "Groq client is not configured."
+        )
 
         return (
             "Cause: Information unavailable.\n"
@@ -533,49 +590,70 @@ Rules:
         )
 
 
-    # --------------------------------------------------------
+    # ========================================================
     # CALL GROQ
-    # --------------------------------------------------------
+    # ========================================================
 
     try:
 
         print(
-            f"Calling Groq for "
-            f"{disease} / {language}..."
+            "------------------------------------------"
         )
+
+        print(
+            "Calling Groq..."
+        )
+
+        print(
+            f"Disease: {disease}"
+        )
+
+        print(
+            f"Language: {language}"
+        )
+
+        print(
+            "------------------------------------------"
+        )
+
 
         response = (
             groq_client
             .chat
             .completions
             .create(
-
                 model="openai/gpt-oss-20b",
 
                 messages=[
-
                     {
                         "role": "system",
                         "content": (
                             "You are an agricultural "
-                            "expert helping "
-                            "groundnut farmers."
-                        )
+                            "expert helping groundnut "
+                            "farmers. "
+                            "You MUST follow the "
+                            "requested language exactly. "
+                            "Never ignore the requested "
+                            "language."
+                        ),
                     },
 
                     {
                         "role": "user",
-                        "content": prompt
-                    }
-
+                        "content": prompt,
+                    },
                 ],
 
                 max_tokens=400,
 
-                temperature=0.2
+                temperature=0.2,
             )
         )
 
+
+        # ====================================================
+        # GET RESPONSE
+        # ====================================================
 
         result = (
             response
@@ -587,20 +665,34 @@ Rules:
 
         if not result:
 
-            return (
-                "Cause: Information unavailable.\n"
-                "Prevention: Information unavailable.\n"
-                "Treatment: Information unavailable.\n"
-                "Advice: Information unavailable."
+            raise Exception(
+                "Groq returned an empty response."
             )
 
 
         result = result.strip()
 
 
-        # ----------------------------------------------------
-        # CACHE SUCCESSFUL RESPONSE
-        # ----------------------------------------------------
+        # ====================================================
+        # PRINT RESPONSE FOR RENDER DEBUGGING
+        # ====================================================
+
+        print(
+            "Groq response:"
+        )
+
+        print(
+            result
+        )
+
+        print(
+            "------------------------------------------"
+        )
+
+
+        # ====================================================
+        # CACHE RESPONSE
+        # ====================================================
 
         disease_cache[
             cache_key
@@ -614,7 +706,7 @@ Rules:
 
         print(
             "Groq error:",
-            str(e)
+            str(e),
         )
 
         return (
@@ -626,14 +718,13 @@ Rules:
 
 
 # ============================================================
-# ROOT
+# ROOT ENDPOINT
 # ============================================================
 
 @app.get("/")
 def root():
 
     return {
-
         "message":
             "Groundnut Leaf Disease Recognition API",
 
@@ -641,20 +732,24 @@ def root():
             "running",
 
         "model":
-            "EfficientNetV2-S"
+            "EfficientNetV2-S",
 
+        "model_loaded":
+            model is not None,
+
+        "supported_languages":
+            SUPPORTED_LANGUAGES,
     }
 
 
 # ============================================================
-# HEALTH CHECK
+# HEALTH ENDPOINT
 # ============================================================
 
 @app.get("/health")
 def health():
 
     return {
-
         "status":
             "healthy",
 
@@ -662,13 +757,18 @@ def health():
             "EfficientNetV2-S",
 
         "model_loaded":
-            model is not None
+            model is not None,
 
+        "groq_configured":
+            groq_client is not None,
+
+        "supported_languages":
+            SUPPORTED_LANGUAGES,
     }
 
 
 # ============================================================
-# PREDICTION
+# PREDICT ENDPOINT
 # ============================================================
 
 @app.post("/predict")
@@ -678,60 +778,76 @@ async def predict(
 
     language: str = Query(
         default="en"
-    )
+    ),
 
 ):
 
     global model
 
-    image = None
 
+    # ========================================================
+    # CHECK MODEL
+    # ========================================================
+
+    if model is None:
+
+        raise HTTPException(
+            status_code=503,
+            detail="Model is not loaded yet.",
+        )
+
+
+    # ========================================================
+    # PRINT REQUEST INFORMATION
+    # ========================================================
+
+    print(
+        "=========================================="
+    )
+
+    print(
+        "New prediction request"
+    )
+
+    print(
+        f"Filename: {file.filename}"
+    )
+
+    print(
+        f"Language received: {language}"
+    )
+
+    print(
+        "=========================================="
+    )
+
+
+    # ========================================================
+    # VALIDATE LANGUAGE
+    # ========================================================
+
+    if language not in SUPPORTED_LANGUAGES:
+
+        print(
+            f"Invalid language '{language}'. "
+            "Using English."
+        )
+
+        language = "en"
+
+
+    image = None
     image_tensor = None
 
+
     try:
-
-        # ====================================================
-        # CHECK MODEL
-        # ====================================================
-
-        if model is None:
-
-            raise Exception(
-                "Model is not loaded."
-            )
-
-
-        # ====================================================
-        # VALIDATE LANGUAGE
-        # ====================================================
-
-        if language not in SUPPORTED_LANGUAGES:
-
-            language = "en"
-
-
-        print(
-            "--------------------------------------------"
-        )
-
-        print(
-            "New prediction request"
-        )
-
-        print(
-            f"Language: {language}"
-        )
-
-        print(
-            f"Filename: {file.filename}"
-        )
-
 
         # ====================================================
         # READ IMAGE
         # ====================================================
 
         image_bytes = await file.read()
+
 
         if not image_bytes:
 
@@ -741,7 +857,7 @@ async def predict(
 
 
         print(
-            f"Image size: "
+            f"Received image: "
             f"{len(image_bytes)} bytes"
         )
 
@@ -751,37 +867,46 @@ async def predict(
         # ====================================================
 
         image = Image.open(
-            io.BytesIO(
-                image_bytes
-            )
+            io.BytesIO(image_bytes)
         ).convert("RGB")
 
 
-        # Release raw bytes
-
+        # We no longer need raw bytes
         del image_bytes
 
 
-        # ====================================================
-        # TRANSFORM IMAGE
-        # ====================================================
-
-        image_tensor = transform(
-            image
-        ).unsqueeze(0)
-
-
-        image_tensor = image_tensor.to(
-            device
+        print(
+            "Image opened successfully."
         )
 
 
         # ====================================================
-        # MODEL PREDICTION
+        # PREPROCESS
+        # ====================================================
+
+        image_tensor = (
+            transform(image)
+            .unsqueeze(0)
+            .to(device)
+        )
+
+
+        print(
+            "Image preprocessing complete."
+        )
+
+
+        # ====================================================
+        # MODEL INFERENCE
+        #
+        # IMPORTANT:
+        # Model is NOT loaded here.
+        #
+        # It was already loaded at startup.
         # ====================================================
 
         print(
-            "Running EfficientNetV2-S inference..."
+            "Starting model inference..."
         )
 
 
@@ -793,24 +918,28 @@ async def predict(
                     image_tensor
                 )
 
-                probabilities = torch.softmax(
-                    output,
-                    dim=1
-                )[0]
+                probabilities = (
+                    torch.softmax(
+                        output,
+                        dim=1,
+                    )[0]
+                )
 
+                predicted_class = (
+                    torch.argmax(
+                        probabilities
+                    ).item()
+                )
 
-                predicted_class = torch.argmax(
-                    probabilities
-                ).item()
-
-
-                confidence = probabilities[
-                    predicted_class
-                ].item()
+                confidence = (
+                    probabilities[
+                        predicted_class
+                    ].item()
+                )
 
 
         # ====================================================
-        # DISEASE NAME
+        # GET DISEASE NAME
         # ====================================================
 
         disease_name = classes[
@@ -829,45 +958,48 @@ async def predict(
 
 
         # ====================================================
-        # RELEASE IMAGE MEMORY
+        # FREE IMAGE MEMORY
         # ====================================================
 
         del image_tensor
-
         image_tensor = None
 
         del image
-
         image = None
+
 
         gc.collect()
 
 
         # ====================================================
-        # GROQ SUGGESTIONS
+        # GROQ
         # ====================================================
 
         print(
-            "Getting disease information..."
+            "Requesting disease information..."
+        )
+
+        print(
+            f"Groq language: {language}"
         )
 
 
         suggestions = get_groq_suggestions(
             disease_name,
-            language
+            language,
         )
 
 
         # ====================================================
-        # FINAL RESPONSE
+        # RESPONSE
         # ====================================================
 
         print(
-            "Prediction request completed."
+            "Prediction completed successfully."
         )
 
         print(
-            "--------------------------------------------"
+            "=========================================="
         )
 
 
@@ -879,50 +1011,62 @@ async def predict(
             "confidence":
                 round(
                     confidence * 100,
-                    2
+                    2,
                 ),
 
             "suggestions":
-                suggestions
+                suggestions,
 
         }
 
 
+    # ========================================================
+    # ERROR
+    # ========================================================
+
     except Exception as e:
 
         print(
+            "=========================================="
+        )
+
+        print(
             "Prediction error:",
-            str(e)
+            str(e),
+        )
+
+        print(
+            "=========================================="
         )
 
 
-        # ----------------------------------------------------
-        # CLEANUP
-        # ----------------------------------------------------
+        raise HTTPException(
+            status_code=500,
+            detail=str(e),
+        )
+
+
+    # ========================================================
+    # FINAL MEMORY CLEANUP
+    # ========================================================
+
+    finally:
 
         if image_tensor is not None:
 
             del image_tensor
 
+
         if image is not None:
 
             del image
 
+
         gc.collect()
 
 
-        # ----------------------------------------------------
-        # RETURN REAL HTTP ERROR
-        # ----------------------------------------------------
-
-        raise HTTPException(
-            status_code=500,
-            detail=str(e)
-        )
-
-
 # ============================================================
-# RUN SERVER LOCALLY
+# LOCAL DEVELOPMENT
 # ============================================================
 
 if __name__ == "__main__":
@@ -930,11 +1074,7 @@ if __name__ == "__main__":
     import uvicorn
 
     uvicorn.run(
-
         app,
-
         host="0.0.0.0",
-
-        port=8000
-
+        port=8000,
     )
