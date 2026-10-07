@@ -1,3 +1,5 @@
+# main.py
+
 import os
 import io
 import gc
@@ -22,9 +24,6 @@ import torch
 import torch.nn as nn
 import torchvision.models as models
 from torchvision import transforms
-import timm
-import numpy as np
-import joblib
 
 from groq import Groq
 
@@ -33,7 +32,10 @@ from groq import Groq
 # FASTAPI
 # ============================================================
 
-app = FastAPI()
+app = FastAPI(
+    title="Groundnut Leaf Disease Recognition API",
+    version="1.0"
+)
 
 
 # ============================================================
@@ -60,7 +62,7 @@ torch.set_num_interop_threads(1)
 
 
 # ============================================================
-# MODEL FILES
+# MODEL DIRECTORY
 # ============================================================
 
 MODEL_DIR = "models"
@@ -82,22 +84,14 @@ HF_BASE_URL = (
 
 
 # ============================================================
-# CURRENT MODEL FILENAMES
+# EFFICIENTNET V2-S MODEL
 # ============================================================
+
+efficientnet_filename = "efficientnet_model.pth"
 
 efficientnet_path = os.path.join(
     MODEL_DIR,
-    "efficientnet_v2_b0_model.pth"
-)
-
-convnext_path = os.path.join(
-    MODEL_DIR,
-    "convnext_tiny_model.pth"
-)
-
-ensemble_path = os.path.join(
-    MODEL_DIR,
-    "ensemble_b0_tiny_model.pkl"
+    efficientnet_filename
 )
 
 
@@ -105,54 +99,60 @@ ensemble_path = os.path.join(
 # DOWNLOAD MODEL IF MISSING
 # ============================================================
 
-def download_model_if_missing(
-    file_path,
-    file_name
-):
+def download_model_if_missing():
 
-    if os.path.exists(file_path):
+    if os.path.exists(efficientnet_path):
 
         print(
-            f"{file_name} already exists."
+            "EfficientNetV2-S model already exists."
         )
 
         return
 
     print(
-        f"Downloading {file_name} "
+        "Downloading EfficientNetV2-S model "
         "from Hugging Face..."
     )
 
-    url = HF_BASE_URL + file_name
-
-    urllib.request.urlretrieve(
-        url,
-        file_path
+    url = (
+        HF_BASE_URL +
+        efficientnet_filename
     )
 
-    print(
-        f"{file_name} downloaded successfully."
-    )
+    try:
+
+        urllib.request.urlretrieve(
+            url,
+            efficientnet_path
+        )
+
+        print(
+            "EfficientNetV2-S model "
+            "downloaded successfully."
+        )
+
+    except Exception as e:
+
+        print(
+            "Error downloading model:",
+            str(e)
+        )
+
+        if os.path.exists(
+            efficientnet_path
+        ):
+            os.remove(
+                efficientnet_path
+            )
+
+        raise
 
 
 # ============================================================
-# DOWNLOAD CURRENT MODELS
+# DOWNLOAD MODEL
 # ============================================================
 
-download_model_if_missing(
-    efficientnet_path,
-    "efficientnet_v2_b0_model.pth"
-)
-
-download_model_if_missing(
-    convnext_path,
-    "convnext_tiny_model.pth"
-)
-
-download_model_if_missing(
-    ensemble_path,
-    "ensemble_b0_tiny_model.pkl"
-)
+download_model_if_missing()
 
 
 # ============================================================
@@ -198,7 +198,7 @@ classes = [
 
 
 # ============================================================
-# LANGUAGES
+# SUPPORTED LANGUAGES
 # ============================================================
 
 SUPPORTED_LANGUAGES = [
@@ -209,7 +209,7 @@ SUPPORTED_LANGUAGES = [
 
 
 # ============================================================
-# CACHE
+# GROQ CACHE
 # ============================================================
 
 disease_cache = {}
@@ -223,97 +223,55 @@ transform = transforms.Compose([
     transforms.Resize(
         (224, 224)
     ),
+
     transforms.ToTensor()
 ])
 
 
 # ============================================================
-# LOAD EFFICIENTNET V2 B0
+# LOAD EFFICIENTNET V2-S
 # ============================================================
 
 def load_efficientnet():
 
     print(
-        "Loading EfficientNetV2-B0 using timm..."
+        "Loading EfficientNetV2-S..."
     )
 
-    model = timm.create_model(
-        "tf_efficientnetv2_b0",
-        pretrained=False,
-        num_classes=7
-    )
+    # --------------------------------------------------------
+    # IMPORTANT:
+    # This architecture must match the model used during
+    # training.
+    # --------------------------------------------------------
 
-    try:
-
-        state = torch.load(
-            efficientnet_path,
-            map_location="cpu",
-            weights_only=True,
-            mmap=True
-        )
-
-    except TypeError:
-
-        state = torch.load(
-            efficientnet_path,
-            map_location="cpu"
-        )
-
-    try:
-
-        model.load_state_dict(
-            state,
-            assign=True
-        )
-
-    except TypeError:
-
-        model.load_state_dict(
-            state
-        )
-
-    del state
-
-    model.to(device)
-
-    model.eval()
-
-    print(
-        "EfficientNetV2-B0 loaded successfully."
-    )
-
-    return model
-
-
-# ============================================================
-# LOAD CONVNEXT TINY
-# ============================================================
-
-def load_convnext():
-
-    print(
-        "Loading ConvNeXt Tiny..."
-    )
-
-    model = models.convnext_tiny(
+    model = models.efficientnet_v2_s(
         weights=None
     )
 
-    features = (
+    # --------------------------------------------------------
+    # Change final classifier from ImageNet classes
+    # to our 7 groundnut disease classes.
+    # --------------------------------------------------------
+
+    num_features = (
         model
-        .classifier[2]
+        .classifier[1]
         .in_features
     )
 
-    model.classifier[2] = nn.Linear(
-        features,
+    model.classifier[1] = nn.Linear(
+        num_features,
         7
     )
+
+    # --------------------------------------------------------
+    # Load trained weights
+    # --------------------------------------------------------
 
     try:
 
         state = torch.load(
-            convnext_path,
+            efficientnet_path,
             map_location="cpu",
             weights_only=True,
             mmap=True
@@ -321,10 +279,16 @@ def load_convnext():
 
     except TypeError:
 
+        # Compatibility fallback for older PyTorch
         state = torch.load(
-            convnext_path,
+            efficientnet_path,
             map_location="cpu"
         )
+
+    # --------------------------------------------------------
+    # assign=True reduces unnecessary memory copies
+    # when supported by the installed PyTorch version.
+    # --------------------------------------------------------
 
     try:
 
@@ -339,29 +303,20 @@ def load_convnext():
             state
         )
 
+    # Release checkpoint object
     del state
 
+    # CPU inference
     model.to(device)
 
+    # Evaluation mode
     model.eval()
 
     print(
-        "ConvNeXt Tiny loaded."
+        "EfficientNetV2-S loaded successfully."
     )
 
     return model
-
-
-# ============================================================
-# ENSEMBLE
-# ============================================================
-
-# IMPORTANT:
-# Do NOT load the Logistic Regression model here.
-# It is loaded only during prediction to reduce
-# Render startup memory usage.
-
-meta_model = None
 
 
 # ============================================================
@@ -373,9 +328,18 @@ def get_groq_suggestions(
     language="en"
 ):
 
+    # --------------------------------------------------------
+    # Validate language
+    # --------------------------------------------------------
+
     if language not in SUPPORTED_LANGUAGES:
 
         language = "en"
+
+
+    # --------------------------------------------------------
+    # Cache
+    # --------------------------------------------------------
 
     cache_key = (
         disease,
@@ -387,6 +351,11 @@ def get_groq_suggestions(
         return disease_cache[
             cache_key
         ]
+
+
+    # --------------------------------------------------------
+    # LANGUAGE INSTRUCTIONS
+    # --------------------------------------------------------
 
     if language == "kn":
 
@@ -435,6 +404,11 @@ Treatment:
 Advice:
 """
 
+
+    # --------------------------------------------------------
+    # PROMPT
+    # --------------------------------------------------------
+
     prompt = f"""
 A groundnut crop has been diagnosed with:
 
@@ -461,6 +435,11 @@ Rules:
 - Keep each section short.
 """
 
+
+    # --------------------------------------------------------
+    # GROQ NOT CONFIGURED
+    # --------------------------------------------------------
+
     if groq_client is None:
 
         return (
@@ -470,6 +449,11 @@ Rules:
             "Advice: Information unavailable."
         )
 
+
+    # --------------------------------------------------------
+    # CALL GROQ
+    # --------------------------------------------------------
+
     try:
 
         response = (
@@ -477,9 +461,11 @@ Rules:
             .chat
             .completions
             .create(
+
                 model="openai/gpt-oss-20b",
 
                 messages=[
+
                     {
                         "role": "system",
                         "content": (
@@ -488,16 +474,20 @@ Rules:
                             "groundnut farmers."
                         )
                     },
+
                     {
                         "role": "user",
                         "content": prompt
                     }
+
                 ],
 
                 max_tokens=400,
+
                 temperature=0.2
             )
         )
+
 
         result = (
             response
@@ -505,6 +495,7 @@ Rules:
             .message
             .content
         )
+
 
         if not result:
 
@@ -515,13 +506,18 @@ Rules:
                 "Advice: Information unavailable."
             )
 
+
         result = result.strip()
 
+
+        # Cache successful response
         disease_cache[
             cache_key
         ] = result
 
+
         return result
+
 
     except Exception as e:
 
@@ -546,24 +542,32 @@ Rules:
 def root():
 
     return {
+
         "message":
             "Groundnut Leaf Disease Recognition API",
 
         "status":
-            "running"
+            "running",
+
+        "model":
+            "EfficientNetV2-S"
     }
 
 
 # ============================================================
-# HEALTH
+# HEALTH CHECK
 # ============================================================
 
 @app.get("/health")
 def health():
 
     return {
+
         "status":
-            "healthy"
+            "healthy",
+
+        "model":
+            "EfficientNetV2-S"
     }
 
 
@@ -573,11 +577,20 @@ def health():
 
 @app.post("/predict")
 async def predict(
+
     file: UploadFile = File(...),
+
     language: str = Query(
         default="en"
     )
+
 ):
+
+    model = None
+
+    image = None
+
+    image_tensor = None
 
     try:
 
@@ -587,12 +600,21 @@ async def predict(
 
         image_bytes = await file.read()
 
+        if not image_bytes:
+
+            raise Exception(
+                "Uploaded file is empty."
+            )
+
+
         image = Image.open(
             io.BytesIO(
                 image_bytes
             )
         ).convert("RGB")
 
+
+        # Release raw image bytes
         del image_bytes
 
 
@@ -604,79 +626,73 @@ async def predict(
             image
         ).unsqueeze(0)
 
+
         image_tensor = image_tensor.to(
             device
         )
 
 
         # ====================================================
-        # EFFICIENTNET V2 B0
+        # LOAD EFFICIENTNET V2-S
         # ====================================================
 
-        eff_model = load_efficientnet()
+        model = load_efficientnet()
+
+
+        # ====================================================
+        # PREDICTION
+        # ====================================================
 
         with torch.inference_mode():
 
-            eff_output = eff_model(
+            output = model(
                 image_tensor
             )
 
-            eff_output = torch.softmax(
-                eff_output,
+            probabilities = torch.softmax(
+                output,
                 dim=1
-            )
-
-            eff_output = (
-                eff_output
-                .cpu()
-                .numpy()
-                .astype(
-                    np.float32
-                )
-            )
+            )[0]
 
 
-        # ====================================================
-        # UNLOAD EFFICIENTNET
-        # ====================================================
+            # Highest probability class
+            predicted_class = torch.argmax(
+                probabilities
+            ).item()
 
-        del eff_model
 
-        gc.collect()
+            # Confidence
+            confidence = probabilities[
+                predicted_class
+            ].item()
 
 
         # ====================================================
-        # CONVNEXT TINY
+        # DISEASE NAME
         # ====================================================
 
-        conv_model = load_convnext()
+        disease_name = classes[
+            predicted_class
+        ]
 
-        with torch.inference_mode():
 
-            conv_output = conv_model(
-                image_tensor
-            )
+        print(
+            f"Prediction: {disease_name}"
+        )
 
-            conv_output = torch.softmax(
-                conv_output,
-                dim=1
-            )
-
-            conv_output = (
-                conv_output
-                .cpu()
-                .numpy()
-                .astype(
-                    np.float32
-                )
-            )
+        print(
+            f"Confidence: "
+            f"{confidence * 100:.2f}%"
+        )
 
 
         # ====================================================
-        # UNLOAD CONVNEXT
+        # RELEASE MODEL MEMORY
         # ====================================================
 
-        del conv_model
+        del model
+
+        model = None
 
         gc.collect()
 
@@ -687,94 +703,11 @@ async def predict(
 
         del image_tensor
 
+        image_tensor = None
+
         del image
 
-        gc.collect()
-
-
-        # ====================================================
-        # COMBINE CNN OUTPUTS
-        # ====================================================
-
-        X_meta = np.concatenate(
-            [
-                eff_output,
-                conv_output
-            ],
-            axis=1
-        )
-
-
-        # ====================================================
-        # LOAD ENSEMBLE ONLY WHEN NEEDED
-        # ====================================================
-
-        print(
-            "Loading B0 + ConvNeXt Tiny ensemble..."
-        )
-
-        meta_model = joblib.load(
-            ensemble_path
-        )
-
-        print(
-            "B0 + ConvNeXt Tiny ensemble loaded."
-        )
-
-
-        # ====================================================
-        # ENSEMBLE PREDICTION
-        # ====================================================
-
-        pred = meta_model.predict(
-            X_meta
-        )[0]
-
-        pred = int(pred)
-
-        disease_name = classes[
-            pred
-        ]
-
-
-        # ====================================================
-        # ENSEMBLE CONFIDENCE
-        # ====================================================
-
-        try:
-
-            ensemble_probabilities = (
-                meta_model
-                .predict_proba(
-                    X_meta
-                )[0]
-            )
-
-            confidence = float(
-                np.max(
-                    ensemble_probabilities
-                )
-            )
-
-        except Exception:
-
-            # Fallback if the loaded
-            # meta-model does not support
-            # predict_proba.
-
-            confidence = float(
-                max(
-                    np.max(eff_output),
-                    np.max(conv_output)
-                )
-            )
-
-
-        # ====================================================
-        # UNLOAD ENSEMBLE
-        # ====================================================
-
-        del meta_model
+        image = None
 
         gc.collect()
 
@@ -792,18 +725,7 @@ async def predict(
 
 
         # ====================================================
-        # RELEASE ARRAYS
-        # ====================================================
-
-        del eff_output
-        del conv_output
-        del X_meta
-
-        gc.collect()
-
-
-        # ====================================================
-        # RESPONSE
+        # FINAL RESPONSE
         # ====================================================
 
         return {
@@ -829,8 +751,6 @@ async def predict(
             str(e)
         )
 
-        # TEMPORARY DEBUG FIELD
-        # Remove "error" after everything works.
 
         return {
 
@@ -848,8 +768,29 @@ async def predict(
         }
 
 
+    finally:
+
+        # ====================================================
+        # FINAL MEMORY CLEANUP
+        # ====================================================
+
+        if model is not None:
+
+            del model
+
+        if image_tensor is not None:
+
+            del image_tensor
+
+        if image is not None:
+
+            del image
+
+        gc.collect()
+
+
 # ============================================================
-# RUN SERVER
+# RUN SERVER LOCALLY
 # ============================================================
 
 if __name__ == "__main__":
@@ -857,8 +798,11 @@ if __name__ == "__main__":
     import uvicorn
 
     uvicorn.run(
+
         app,
+
         host="0.0.0.0",
+
         port=8000
     )
 
