@@ -1,9 +1,13 @@
+# ============================================================
 # main.py
+# Groundnut Leaf Disease Recognition API
+# ============================================================
 
 import os
 import io
 import gc
 import urllib.request
+import threading
 
 # ============================================================
 # MEMORY / CPU OPTIMIZATION
@@ -15,7 +19,18 @@ os.environ["OPENBLAS_NUM_THREADS"] = "1"
 os.environ["VECLIB_MAXIMUM_THREADS"] = "1"
 os.environ["NUMEXPR_NUM_THREADS"] = "1"
 
-from fastapi import FastAPI, UploadFile, File, Query
+# ============================================================
+# IMPORTS
+# ============================================================
+
+from fastapi import (
+    FastAPI,
+    UploadFile,
+    File,
+    Query,
+    HTTPException,
+)
+
 from fastapi.middleware.cors import CORSMiddleware
 
 from PIL import Image
@@ -59,6 +74,21 @@ device = torch.device("cpu")
 
 torch.set_num_threads(1)
 torch.set_num_interop_threads(1)
+
+
+# ============================================================
+# GLOBAL MODEL
+# ============================================================
+
+# The model is loaded ONCE when the server starts.
+# It is NOT loaded/deleted for every prediction.
+
+model = None
+
+# Prevent multiple CPU inference requests from running
+# simultaneously.
+
+model_lock = threading.Lock()
 
 
 # ============================================================
@@ -141,6 +171,7 @@ def download_model_if_missing():
         if os.path.exists(
             efficientnet_path
         ):
+
             os.remove(
                 efficientnet_path
             )
@@ -239,33 +270,30 @@ def load_efficientnet():
     )
 
     # --------------------------------------------------------
-    # IMPORTANT:
-    # This architecture must match the model used during
-    # training.
+    # CREATE MODEL ARCHITECTURE
     # --------------------------------------------------------
 
-    model = models.efficientnet_v2_s(
+    loaded_model = models.efficientnet_v2_s(
         weights=None
     )
 
     # --------------------------------------------------------
-    # Change final classifier from ImageNet classes
-    # to our 7 groundnut disease classes.
+    # CHANGE CLASSIFIER
     # --------------------------------------------------------
 
     num_features = (
-        model
+        loaded_model
         .classifier[1]
         .in_features
     )
 
-    model.classifier[1] = nn.Linear(
+    loaded_model.classifier[1] = nn.Linear(
         num_features,
         7
     )
 
     # --------------------------------------------------------
-    # Load trained weights
+    # LOAD TRAINED WEIGHTS
     # --------------------------------------------------------
 
     try:
@@ -279,44 +307,89 @@ def load_efficientnet():
 
     except TypeError:
 
-        # Compatibility fallback for older PyTorch
+        # Compatibility with older PyTorch
+
         state = torch.load(
             efficientnet_path,
             map_location="cpu"
         )
 
     # --------------------------------------------------------
-    # assign=True reduces unnecessary memory copies
-    # when supported by the installed PyTorch version.
+    # LOAD STATE DICT
     # --------------------------------------------------------
 
     try:
 
-        model.load_state_dict(
+        loaded_model.load_state_dict(
             state,
             assign=True
         )
 
     except TypeError:
 
-        model.load_state_dict(
+        loaded_model.load_state_dict(
             state
         )
 
-    # Release checkpoint object
+    # --------------------------------------------------------
+    # RELEASE CHECKPOINT MEMORY
+    # --------------------------------------------------------
+
     del state
 
-    # CPU inference
-    model.to(device)
+    # --------------------------------------------------------
+    # CPU
+    # --------------------------------------------------------
 
-    # Evaluation mode
-    model.eval()
+    loaded_model.to(device)
+
+    # --------------------------------------------------------
+    # EVALUATION MODE
+    # --------------------------------------------------------
+
+    loaded_model.eval()
 
     print(
         "EfficientNetV2-S loaded successfully."
     )
 
-    return model
+    return loaded_model
+
+
+# ============================================================
+# FASTAPI STARTUP
+# ============================================================
+
+@app.on_event("startup")
+def startup_event():
+
+    global model
+
+    print(
+        "============================================"
+    )
+
+    print(
+        "Starting Groundnut Disease API..."
+    )
+
+    print(
+        "============================================"
+    )
+
+    print(
+        "Initializing EfficientNetV2-S model..."
+    )
+
+    model = load_efficientnet()
+
+    print(
+        "Model ready for predictions."
+    )
+
+    print(
+        "============================================"
+    )
 
 
 # ============================================================
@@ -329,7 +402,7 @@ def get_groq_suggestions(
 ):
 
     # --------------------------------------------------------
-    # Validate language
+    # VALIDATE LANGUAGE
     # --------------------------------------------------------
 
     if language not in SUPPORTED_LANGUAGES:
@@ -338,7 +411,7 @@ def get_groq_suggestions(
 
 
     # --------------------------------------------------------
-    # Cache
+    # CACHE KEY
     # --------------------------------------------------------
 
     cache_key = (
@@ -346,7 +419,17 @@ def get_groq_suggestions(
         language
     )
 
+
+    # --------------------------------------------------------
+    # CHECK CACHE
+    # --------------------------------------------------------
+
     if cache_key in disease_cache:
+
+        print(
+            f"Using cached Groq response: "
+            f"{disease} / {language}"
+        )
 
         return disease_cache[
             cache_key
@@ -456,6 +539,11 @@ Rules:
 
     try:
 
+        print(
+            f"Calling Groq for "
+            f"{disease} / {language}..."
+        )
+
         response = (
             groq_client
             .chat
@@ -510,7 +598,10 @@ Rules:
         result = result.strip()
 
 
-        # Cache successful response
+        # ----------------------------------------------------
+        # CACHE SUCCESSFUL RESPONSE
+        # ----------------------------------------------------
+
         disease_cache[
             cache_key
         ] = result
@@ -551,6 +642,7 @@ def root():
 
         "model":
             "EfficientNetV2-S"
+
     }
 
 
@@ -567,7 +659,11 @@ def health():
             "healthy",
 
         "model":
-            "EfficientNetV2-S"
+            "EfficientNetV2-S",
+
+        "model_loaded":
+            model is not None
+
     }
 
 
@@ -586,13 +682,50 @@ async def predict(
 
 ):
 
-    model = None
+    global model
 
     image = None
 
     image_tensor = None
 
     try:
+
+        # ====================================================
+        # CHECK MODEL
+        # ====================================================
+
+        if model is None:
+
+            raise Exception(
+                "Model is not loaded."
+            )
+
+
+        # ====================================================
+        # VALIDATE LANGUAGE
+        # ====================================================
+
+        if language not in SUPPORTED_LANGUAGES:
+
+            language = "en"
+
+
+        print(
+            "--------------------------------------------"
+        )
+
+        print(
+            "New prediction request"
+        )
+
+        print(
+            f"Language: {language}"
+        )
+
+        print(
+            f"Filename: {file.filename}"
+        )
+
 
         # ====================================================
         # READ IMAGE
@@ -607,6 +740,16 @@ async def predict(
             )
 
 
+        print(
+            f"Image size: "
+            f"{len(image_bytes)} bytes"
+        )
+
+
+        # ====================================================
+        # OPEN IMAGE
+        # ====================================================
+
         image = Image.open(
             io.BytesIO(
                 image_bytes
@@ -614,7 +757,8 @@ async def predict(
         ).convert("RGB")
 
 
-        # Release raw image bytes
+        # Release raw bytes
+
         del image_bytes
 
 
@@ -633,38 +777,36 @@ async def predict(
 
 
         # ====================================================
-        # LOAD EFFICIENTNET V2-S
+        # MODEL PREDICTION
         # ====================================================
 
-        model = load_efficientnet()
+        print(
+            "Running EfficientNetV2-S inference..."
+        )
 
 
-        # ====================================================
-        # PREDICTION
-        # ====================================================
+        with model_lock:
 
-        with torch.inference_mode():
+            with torch.inference_mode():
 
-            output = model(
-                image_tensor
-            )
+                output = model(
+                    image_tensor
+                )
 
-            probabilities = torch.softmax(
-                output,
-                dim=1
-            )[0]
+                probabilities = torch.softmax(
+                    output,
+                    dim=1
+                )[0]
 
 
-            # Highest probability class
-            predicted_class = torch.argmax(
-                probabilities
-            ).item()
+                predicted_class = torch.argmax(
+                    probabilities
+                ).item()
 
 
-            # Confidence
-            confidence = probabilities[
-                predicted_class
-            ].item()
+                confidence = probabilities[
+                    predicted_class
+                ].item()
 
 
         # ====================================================
@@ -687,18 +829,7 @@ async def predict(
 
 
         # ====================================================
-        # RELEASE MODEL MEMORY
-        # ====================================================
-
-        del model
-
-        model = None
-
-        gc.collect()
-
-
-        # ====================================================
-        # RELEASE IMAGE TENSOR
+        # RELEASE IMAGE MEMORY
         # ====================================================
 
         del image_tensor
@@ -716,17 +847,29 @@ async def predict(
         # GROQ SUGGESTIONS
         # ====================================================
 
-        suggestions = (
-            get_groq_suggestions(
-                disease_name,
-                language
-            )
+        print(
+            "Getting disease information..."
+        )
+
+
+        suggestions = get_groq_suggestions(
+            disease_name,
+            language
         )
 
 
         # ====================================================
         # FINAL RESPONSE
         # ====================================================
+
+        print(
+            "Prediction request completed."
+        )
+
+        print(
+            "--------------------------------------------"
+        )
+
 
         return {
 
@@ -741,6 +884,7 @@ async def predict(
 
             "suggestions":
                 suggestions
+
         }
 
 
@@ -752,31 +896,9 @@ async def predict(
         )
 
 
-        return {
-
-            "disease":
-                "Unknown",
-
-            "confidence":
-                0,
-
-            "suggestions":
-                "Unable to process image.",
-
-            "error":
-                str(e)
-        }
-
-
-    finally:
-
-        # ====================================================
-        # FINAL MEMORY CLEANUP
-        # ====================================================
-
-        if model is not None:
-
-            del model
+        # ----------------------------------------------------
+        # CLEANUP
+        # ----------------------------------------------------
 
         if image_tensor is not None:
 
@@ -787,6 +909,16 @@ async def predict(
             del image
 
         gc.collect()
+
+
+        # ----------------------------------------------------
+        # RETURN REAL HTTP ERROR
+        # ----------------------------------------------------
+
+        raise HTTPException(
+            status_code=500,
+            detail=str(e)
+        )
 
 
 # ============================================================
@@ -804,5 +936,5 @@ if __name__ == "__main__":
         host="0.0.0.0",
 
         port=8000
-    )
 
+    )
